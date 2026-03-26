@@ -215,20 +215,20 @@ def propagate_scipy_compatible(model, params, cov):
     return y, ycov
 
 
-# def summarize_fit(minuit):
-#     fmin = minuit.fmin
-#
-#     summary = {
-#         "Converged": fmin.is_valid,
-#         "EDM": fmin.edm,
-#         "FCN (min value)": fmin.fval,
-#         "Nfcn": fmin.nfcn,
-#     }
-#
-#     print("\n=== FIT SUMMARY ===")
-#     for k, v in summary.items():
-#         print(f"{k:20}: {v}")
+def summarize_fit(minuit):
+    fmin = minuit.fmin
 
+    print("\n=== FIT SUMMARY ===")
+    print(f"Converged (is_valid)   : {fmin.is_valid}")
+    print(f"Has covariance         : {minuit.covariance is not None}")
+    print(f"EDM                    : {fmin.edm}")
+    print(f"EDM goal               : {minuit.tol}")
+    print(f"FCN                    : {fmin.fval}")
+    print(f"Nfcn                   : {fmin.nfcn}")
+
+    print(f"Has reached call limit : {fmin.has_reached_call_limit}")
+    print(f"Hesse ok               : {fmin.has_accurate_covar}")
+    print(f"Posdef covariance      : {fmin.has_posdef_covar}")
 
 def parameter_table(minuit):
     data = []
@@ -271,44 +271,20 @@ def minos_table(minuit):
 
 
 
-# def likelihood_scan(minuit, param, pdf=None, n_points=100):
-#     center = minuit.values[param]
-#     error = minuit.errors[param]
-#
-#     scan_range = np.linspace(center - 3 * error, center + 3 * error, n_points)
-#     fvals = []
-#
-#     for val in scan_range:
-#         minuit.values[param] = val
-#         fvals.append(minuit.fval)
-#
-#     # restore best fit
-#     minuit.values[param] = center
-#
-#     fig, ax = plt.subplots()
-#     ax.plot(scan_range, fvals)
-#     ax.axvline(center, linestyle="--")
-#     ax.set_xlabel(param)
-#     ax.set_ylabel("FCN / -log L")
-#     ax.set_title(f"Likelihood scan for {param}")
-#
-#     if pdf is not None:
-#         pdf.savefig(fig)   # 👉 saves this figure as a page
-#         plt.close(fig)
-#     else:
-#         plt.show()
-
 def likelihood_scan(minuit, pdf=None):
+    """Draws the MN matrix; saves to pdf if provided, otherwise shows."""
     minuit.draw_mnmatrix()
-    fig = plt.gcf()  # get current figure
-
+    fig = plt.gcf()
     if pdf is not None:
         pdf.savefig(fig)
         plt.close(fig)
     else:
         plt.show()
 
-def fitting(phi_i, ephi_i, init_mean, init_std, model="lognorm", pdf=None, do_plot=False):
+
+def fitting(phi_i, ephi_i, init_mean, init_std,
+            model="lognorm", pdf=None,
+            do_plot=False, collect_stats=False, return_full=False):
     """
         Fits selected model on the data, giving best fit parameters and corresponding errors.
         Can be improved as the Gaussian fit is slow.
@@ -368,82 +344,136 @@ def fitting(phi_i, ephi_i, init_mean, init_std, model="lognorm", pdf=None, do_pl
                         init_mean, init_std,
                         name=param_names)
 
-
-
     if model == "alpha":
-        minuit.limits[param_names[0]] = (1, 2) # alpha
-        minuit.limits[param_names[1]] = (init_mean/1000, 1000*init_mean)  # loc
-        minuit.limits[param_names[2]] = (init_std/1000, 1000*init_std)  # scale
+        minuit_obj = Minuit(minimize_func, init_alpha := 1.7, init_mean, init_std, name=param_names)
+        #minuit_obj.limits[param_names[0]] = (1, 2)
+        minuit_obj.limits[param_names[1]] = (init_mean / 1000, 1000 * init_mean)
+        minuit_obj.limits[param_names[2]] = (init_std / 1000, 1000 * init_std)
     else:
-        #minuit.limits[param_names[0]] = (init_mean/1000, 1000*init_mean)
-        minuit.limits[param_names[1]] = (init_std/1000, 1000*init_std)
+        minuit_obj = Minuit(minimize_func, init_mean, init_std, name=param_names)
+        minuit_obj.limits[param_names[1]] = (init_std / 1000, 1000 * init_std)
 
-    #minuit.errordef = Minuit.LIKELIHOOD
-    minuit.migrad()
+    minuit_obj.migrad()
+    converged = minuit_obj.fmin.is_valid
+
+    for name in minuit_obj.parameters:
+        val = minuit_obj.values[name]
+        low, high = minuit_obj.limits[name]
+
+        if low is not None and np.isclose(val, low, rtol=1e-3):
+            print(f"Parameter {name} is at LOWER limit!")
+
+        if high is not None and np.isclose(val, high, rtol=1e-3):
+            print(f"Parameter {name} is at UPPER limit!")
+
     stats = {
-        "converged": minuit.fmin.is_valid,
-        "nfcn": minuit.fmin.nfcn,  # number of function calls
-        "niter": minuit.fmin.ngrad,  # gradient evaluations
-        "edm": minuit.fmin.edm,  # estimated distance to minimum
-        "fval": minuit.fmin.fval,  # function value at minimum
-        **{f"val_{n}": minuit.values[n] for n in minuit.parameters},
-        **{f"err_{n}": minuit.errors[n] for n in minuit.parameters},
+        "converged": minuit_obj.fmin.is_valid,
+        "nfcn": minuit_obj.fmin.nfcn,  # number of function calls
+        "niter": minuit_obj.fmin.ngrad,  # gradient evaluations
+        "edm": minuit_obj.fmin.edm,  # estimated distance to minimum
+        "fval": minuit_obj.fmin.fval,  # function value at minimum
+        **{f"val_{n}": minuit_obj.values[n] for n in minuit_obj.parameters},
+        **{f"err_{n}": minuit_obj.errors[n] for n in minuit_obj.parameters},
     }
-    print(stats)
-    #summarize_fit(minuit)
 
-    if not minuit.fmin.is_valid:
+    if collect_stats:
+        print("Collecting stats")
+        print(stats)
+        #return stats
+
+    if not converged:
         print("Fit did not converge!")
 
-    param_df = parameter_table(minuit)
-    minos_df = minos_table(minuit)
+    summarize_fit(minuit_obj)
+    param_df = parameter_table(minuit_obj)
+    minos_df = minos_table(minuit_obj)
 
     #  scan
     if do_plot:
-        fig, axes = plt.subplots(1, len(minuit.parameters), figsize=(5 * len(minuit.parameters), 4))
-        if len(minuit.parameters) == 1:
+        n_params = len(minuit_obj.parameters)
+        fig, axes = plt.subplots(1, n_params, figsize=(5 * n_params, 4))
+        if n_params == 1:
             axes = [axes]
 
-        for ax, p in zip(axes, minuit.parameters):
-            # mnprofile re-uses already-computed information, cheaper than draw_mnprofile
-            x, y, ok = minuit.mnprofile(p, size=30)  # reduce size from default 100
-            ax.plot(x, y)
-            ax.axvline(minuit.values[p], color='r', linestyle='--', label='best fit')
+        for ax, p in zip(axes, minuit_obj.parameters):
+            # size=30 instead of default 100 — 3× faster, still informative
+            x, y, ok = minuit_obj.mnprofile(p, size=30)
+            ax.plot(x, y, lw=1.8)
+            ax.axvline(minuit_obj.values[p], color="red",
+                       linestyle="--", lw=1.2, label="best fit")
             ax.set_xlabel(p)
-            ax.set_ylabel("-2 log L")
+            ax.set_ylabel("−2 ln L")
             ax.set_title(f"Profile: {p}")
+            ax.legend(fontsize=8)
 
+        plt.suptitle(
+            f"model={model}  |  converged={converged}"
+            f"  |  nfcn={minuit_obj.fmin.nfcn}"
+            f"  |  EDM={minuit_obj.fmin.edm:.2e}"
+            f"  |  niter={ minuit_obj.fmin.ngrad}"
+            f"  |  fval={minuit_obj.fmin.fval}",
+            fontsize=9
+        )
         plt.tight_layout()
         if pdf is not None:
             pdf.savefig(fig)
             plt.close(fig)
         else:
             plt.show()
-    converged = minuit.fmin.is_valid
 
+    params = np.array([minuit_obj.values[name] for name in minuit_obj.parameters])
+    cov = np.array(minuit_obj.covariance)
 
     if model == "alpha":
         yerr_prop = (np.nan, np.nan)
     else:
         y, ycov = propagate_scipy_compatible(
-            lambda p: pdf_model(p, minuit.values[0], minuit.values[1]), minuit.values, minuit.covariance)
+            lambda p: pdf_model(p, params[0], params[1]), params, cov)
         yerr_prop = np.sqrt(np.diag(ycov))
 
     if model == "gaussian":
-        dist = norm(loc=minuit.values[0], scale=minuit.values[1])
+        dist = norm(loc=params[0], scale=params[1])
     elif model == "lognorm":
-        dist = lognorm(s=minuit.values[1], scale=np.exp(minuit.values[0]))
+        dist = lognorm(s=params[1], scale=np.exp(params[0]))
 
     elif model == "alpha":
-        dist = levy_stable( alpha =minuit.values[0], beta = 1.0, loc=minuit.values[1], scale=minuit.values[2] )
+        dist = levy_stable( alpha =params[0], beta = 1.0, loc=params[1], scale=params[2] )
 
     best_params = [minuit.values[name] for name in param_names]
     logL = -minimize_func(*best_params)
 
     if model == "alpha":
         return (*best_params, np.nan, np.nan, logL, converged)
-    else:
-        return minuit.values[0], minuit.values[1], yerr_prop[0], yerr_prop[1], logL, converged
+
+    basic_result = (
+        minuit_obj.values[0],
+        minuit_obj.values[1],
+        yerr_prop[0],
+        yerr_prop[1],
+        logL,
+        converged,
+    )
+
+    if not return_full:
+        return basic_result
+
+    #extended diagnostics
+
+    full_result = {
+        "basic": basic_result,
+        "params": [minuit_obj.values[name] for name in param_names],
+        "errors": [minuit_obj.errors[name] for name in param_names],
+        "logL": logL,
+        "converged": converged,
+        "edm": minuit_obj.fmin.edm,
+        "nfcn": minuit_obj.fmin.nfcn,
+        "has_call_limit": minuit_obj.fmin.has_reached_call_limit,
+        "has_valid_covar": minuit_obj.fmin.has_accurate_covar,
+    }
+
+    return full_result
+
+
 
 
 def fit_error_trend(flux, flux_err):
@@ -591,10 +621,7 @@ def plot_likelihood_distribution(
     C = fit_error_trend(phi, ephi)
     sims = simulate_distribution(phi, ephi, fit_params,  n_sim=n_sim,  model=model, C=C)
 
-
     # 2) Fit each simulation and collect TS (logL)
-
-
     print("Fitting simulations in parallel...")
 
     n_cores = cpu_count()
@@ -625,7 +652,8 @@ def plot_likelihood_distribution(
                 sigma_real,
                 model=model,
                 pdf=debug_pdf,
-                do_plot=True
+                do_plot=True,
+                collect_stats=True,
             )
 
 
@@ -735,12 +763,16 @@ def fit_single_sim(args):
             sigma_real,
             model=model,
             do_plot=False,
+            return_full=True,
+            collect_stats=True,
         )
 
-        logL = params_sim[-2]
-        converged = params_sim[-1]
-
-        return logL, converged
+        return (
+            params_sim["logL"],
+            params_sim["converged"],
+            params_sim["edm"],
+            params_sim["has_call_limit"],
+        )
 
     except Exception:
 
@@ -769,7 +801,6 @@ def fit_single_sim_delta_TS(args):
 
         logL_gauss = params_gauss[4]
         pdf_norm = lambda x: pdf_Gauss(x, params_gauss[0], params_gauss[1])
-        dev_norm = deviance(phi_sim / phi_med, phi_sim / phi_med, pdf_norm)
 
         # Lognormal fit
         params_ln = fitting(
@@ -782,11 +813,10 @@ def fit_single_sim_delta_TS(args):
 
         logL_ln = params_ln[4]
         pdf_ln = lambda x: pdf_LogNorm(x, params_ln[0], params_ln[1])
-        dev_ln = deviance(phi_sim / phi_med, phi_sim / phi_med, pdf_ln)
 
         delta_TS = -2 * (logL_ln - logL_gauss)
 
-        return delta_TS, True, logL_ln, logL_gauss, dev_ln, dev_norm
+        return delta_TS, True, logL_ln, logL_gauss
 
     except Exception:
         return np.nan, False
@@ -844,8 +874,7 @@ def plot_delta_TS_gaussian_vs_lognorm(
     converged_flags = np.array([res[1] for res in results])
     logL_ln_sim_array = np.array([res[2] for res in results])
     logL_gauss_sim_array = np.array([res[3] for res in results])
-    deviance_ln = np.array([res[4] for res in results])
-    deviance_gauss = np.array([res[5] for res in results])
+
 
 
 
@@ -904,10 +933,9 @@ def plot_delta_TS_gaussian_vs_lognorm(
     data['Delta_TS_sim'] = delta_TS_sims
     data['LogL_ln'] = logL_ln_sim_array
     data['LogL_gauss'] = logL_gauss_sim_array
-    data['deviance_ln'] = deviance_ln
-    data['deviance_gaussian'] = deviance_gauss
 
-    ascii.write(data, f"{path}/Delta_TS_results_Gauss_LN_deviance.dat", overwrite=True)
+
+    ascii.write(data, f"{path}/Delta_TS_results_Gauss_LN.dat", overwrite=True)
 
     return delta_TS_sims, delta_TS_real, mean_TS, std_TS
 
@@ -915,9 +943,8 @@ def plot_delta_TS_gaussian_vs_lognorm(
 if __name__ == "__main__":
 
     #Load the data and plot the ligthcurve
-    filename = args.p #"/home/amikhno/spectral_parameters_1simu_LogParabolaExpCutoffPowerLawEBLSpectralModel.ecsv"  "/home/amikhno/Results_Mrk421_10min_3times_week_merged_table.ecsv"
+    filename = args.p
     name = args.s
-
     path = args.fig_path + name
     if not os.path.exists(path):
         os.makedirs(path)
@@ -932,21 +959,10 @@ if __name__ == "__main__":
 
     #Plot the initial lightcurve as it is
     mask = plot_lightcurve(title, t, phi, ephi, path)
-
-    #Plot the histogram of the standardized flux and print the deviance
-    # mean, std = 0.5, 3.
-    # pdf = lambda x: pdf_Gauss(x, mean, std)
-    # pdf = lambda x: pdf_LogNorm(x, mean, std)
-    # plot_histo(title, phi/phi_med, ephi/phi_med, pdf_sat, rebin=5)(title, phi/phi_med, ephi/phi_med, pdf_sat, rebin=5)
-    # plt.show()
     phi = phi[~mask]
-
     ephi = ephi[~mask]
 
-
-    #params_fited_ln = fitting(phi / phi_med, ephi / phi_med, mu , sigma )
-
-    pdf_path = f"{path}/likelihood_scans.pdf"
+    pdf_path = f"{path}/likelihood_scans_initial_LC.pdf"
 
     with PdfPages(pdf_path) as pdf:
         mean, std = np.mean(phi / phi_med), np.std(phi / phi_med)
@@ -956,7 +972,9 @@ if __name__ == "__main__":
             mean,
             std,
             model="gaussian",
-            pdf=pdf
+            pdf=pdf,
+            do_plot=True,
+            collect_stats=False,
         )
         v = np.var(phi / phi_med)
         sigma2 = np.log(1 + v / mean ** 2)
@@ -970,54 +988,12 @@ if __name__ == "__main__":
             mu,
             sigma,
             model="lognorm",
-            pdf=pdf
+            pdf=pdf,
+            do_plot=True,
+            collect_stats=False,
         )
 
-
-    # params_fited_alpha = fitting(phi / phi_med, ephi / phi_med, mean, std, model="alpha")
-    # print(f" Alpha fit parameters: {params_fited_alpha}")
-
-    #Plot the initinal data vs the fited dist
-
-    # fig, ax = plt.subplots(figsize=(10, 6), nrows=1, ncols=1)
-    # ax.errorbar(t, phi_sim0/np.median(phi_sim0), ephi_sim0/np.median(phi_sim0), fmt = 'o', label = 'simulated LC (normal distibution)')
-    # ax.errorbar(t, phi/phi_med, ephi/phi_med, fmt = 'o', label = 'init LC')
-    # plt.show()
-    #
-
-    # #Compute deviance and delta TS for Gaussian and Lognormal
-    #
-    pdf_norm = lambda x: pdf_Gauss(x, params_fited_norm[0], params_fited_norm[1])
-    dev_norm = deviance(phi/phi_med, ephi/phi_med, pdf_norm)
-    print(f"deviance gaussian fit real data {dev_norm}")
-    #
-    # print(f'Start fitting the MC by gaussian')
-    # TS_list_ln = []
-    # for i in range(len(sims)):
-    # 	phi_sim, ephi_sim = sims[i]
-    # 	params_fited_ln_sim = fitting(phi_sim / np.median(phi_sim), ephi_sim /  np.median(phi_sim), mean, std, model = 'lognorm' )
-    # 	TS_list_ln.append(params_fited_ln_sim[4])
-    # 	mean_mu_ln = np.mean(params_fited_ln_sim[0])
-    # 	mean_std_ln = np.mean(params_fited_ln_sim[1])
-    # 	mean_mu_err_ln = np.mean(params_fited_ln_sim[2])
-    # 	mean_std_err_ln = np.mean(params_fited_ln_sim[3])
-    #
-    # print(f'mean TS for the whole simulations set! { np.mean(TS_list_ln)}')
-    #
-    # TS_list = []
-    # for i in range(len(sims)):
-    # 	phi_sim0, ephi_sim0 = sims[i]
-    # 	params_fited_norm_sim = fitting(phi_sim0 / np.median(phi_sim0), ephi_sim0 /  np.median(phi_sim0), mean, std, model = 'gaussian' )
-    # 	TS_list.append(params_fited_norm_sim[4])
-    # 	mean_mu_norm = np.mean(params_fited_norm_sim[0])
-    # 	mean_std_norm = np.mean(params_fited_norm_sim[1])
-    # 	mean_mu_err_norm = np.mean(params_fited_norm_sim[2])
-    # 	mean_std_err_norm = np.mean(params_fited_norm_sim[3])
-    #
-    # print(f'mean TS for the whole simulations set! { np.mean(TS_list)}')
-
-
-    #  plot
+    #plot fit
 
     fig, ax = plt.subplots(figsize=(8, 6), nrows=1, ncols=1)
     plt.subplots_adjust(bottom=0.1, top=0.95, left=0.1, right=0.96, hspace=0.05)
@@ -1025,20 +1001,14 @@ if __name__ == "__main__":
     ax.set_xlabel(r"log$_{10}$(energy flux [TeV cm$^{-2}$ s$^{-1}$])", ha="center", va='center', labelpad=12,
     			  fontsize=12)
     ax.set_ylabel(r"# entries", ha="center", va='center', labelpad=12, fontsize=12)
-    # ax.set_yscale('log')
     ratio = phi / phi_med
-
     mask = ratio > 0
     log_phi = np.log10(ratio[mask])
-
-    #hist, bins = np.histogram(log_phi, bins=bins)
     hist, bins = hist_flux((phi / phi_med)[mask], (ephi / phi_med)[mask], 2)
-
     ax.stairs(hist, bins)
     bin_centers = 0.5 * (bins[1:] + bins[:-1])
     sel = hist >= 1
     ax.errorbar(bin_centers[sel], hist[sel], yerr=np.sqrt(hist[sel]), fmt='', mfc='none', color='tab:blue', ls='none')
-
     bin_size_log10 = bins[1] - bins[0]
     log10phi_plot = np.linspace(np.min(log_phi), np.max(log_phi))
     phi_plot = np.power(10, log10phi_plot)
@@ -1059,82 +1029,10 @@ if __name__ == "__main__":
     )
     ax.plot(log10phi_plot, phi_plot * pdf_norm(phi_plot) * normalization_pdf, label=label_norm)
 
-    # pdf_Alpha = lambda x: pdf_alpha_stable(
-    #     x,
-    #     params_fited_alpha[1],  # loc
-    #     params_fited_alpha[2],  # scale
-    #     params_fited_alpha[0]  # alpha
-    # )
-    # label_alpha = (
-    #     "Alpha-stable fit\n"
-    #     fr"$\mathrm{{alpha}} = {params_fited_alpha[0]:.2f}$,"
-    #     fr"$\mathrm{{loc}} = {params_fited_alpha[1]:.2f}$, "
-    #     fr"$\mathrm{{scale}} = {params_fited_alpha[2]:.2f}$"
-    # )
-    #
-    # ax.plot(log10phi_plot, phi_plot * pdf_Alpha(phi_plot) * normalization_pdf, label=label_alpha)
-
-    #
-    # pdf_norm_simu = lambda x: pdf_Gauss(x, mean_mu_norm, mean_std_norm)
-    # label_norm_simu = (
-    # 	"Gaussian fit MC\n"
-    # 	fr"$\mu = {mean_mu_norm:.2f} \pm {mean_mu_err_norm:.2f}$, "
-    # 	fr"$\sigma = {mean_std_norm:.2f} \pm {mean_std_err_norm:.2f}$"
-    # )
-    # ax.plot(log10phi_plot, phi_plot * pdf_norm_simu(phi_plot) * normalization_pdf, label=label_norm_simu)
-    #
-    # pdf_ln_simu = lambda x: pdf_LogNorm(x, mean_mu_ln, mean_std_ln)
-    # label_ln_simu = (
-    # 	"Lognormal fit MC\n"
-    # 	fr"$\mu = {mean_mu_ln:.2f} \pm {mean_mu_err_ln:.2f}$, "
-    # 	fr"$\sigma = {mean_std_ln:.2f} \pm {mean_std_err_ln:.2f}$"
-    # )
-    # ax.plot(log10phi_plot, phi_plot * pdf_ln_simu(phi_plot) * normalization_pdf, label=label_ln_simu)
-
     plt.legend()
     plt.savefig(f"{path}/fit_histo_.pdf", dpi=150)
 
-
-    #
-    # pdf_ln = lambda x: pdf_LogNorm(x, params_fited_ln[0], params_fited_ln[1])
-    # dev_ln = deviance(phi / phi_med, ephi / phi_med, pdf_ln)
-    # print(f"deviance  lognormal {dev_ln}")
-    #
-    # print(f"delta TS = {dev_norm - dev_ln}")
-    #
-    # print(f" sum(ln(likelyhood_gauss)) = {params_fited_norm[4]}")
-    # print(f" sum(ln(likelyhood_lognorm)) = {params_fited_ln[4]}")
-    # print(f"My comparison: {-2*(params_fited_norm[4] - params_fited_ln[4])}")
-    # print(f'Delta TS simu norms vs data ln:  {-2*(np.mean(TS_list)-params_fited_ln[4])}')
-    #
-    #
-    # #sim_res = simulate_distribution(phi, params_fited_ln[0], params_fited_ln[1])
-
-
-
-    # plot_likelihood_distribution(
-    #     phi=phi,
-    #     ephi=ephi,
-    #     t=t,
-    #     fit_params=params_fited_norm,
-    #     path = path,
-    #     model="gaussian",
-    #     n_sim=args.n_sim,
-    #     title="Gaussian Model Likelihood Test"
-    # )
-
-
-    # delta_TS_sims, delta_TS_real, mean_TS, std_TS = plot_delta_TS_gaussian_vs_lognorm(
-    #     phi=phi,
-    #     ephi=ephi,
-    #     t=t,
-    #     fit_params_gauss=params_fited_norm,
-    #     fit_params_lognorm=params_fited_ln,
-    #     path=path,
-    #     n_sim=args.n_sim
-    # )
-
-    print("Perform the simulations and the fit for Lognormal")
+    print("Perform the simulations and the fit for Gaussian")
 
     plot_likelihood_distribution(
         phi=phi,
@@ -1142,22 +1040,7 @@ if __name__ == "__main__":
         t=t,
         fit_params=params_fited_ln,
         path = path,
-        model="lognorm",
+        model="gaussian",
         n_sim=args.n_sim,
-        title="Lognorm Model Likelihood Test"
+        title="Gaussian Model Likelihood Test"
     )
-    #
-    # print("Perform the simulations and the fit for Alpha-stable")
-    #
-    # #params_fited_norm = fitting(phi / phi_med, ephi / phi_med, 0.1, 1.5, model="alpha")
-    #
-    # TS_sim, delta_TS, significance =plot_likelihood_distribution(
-    #     phi=phi,
-    #     ephi=ephi,
-    #     t=t,
-    #     fit_params=params_fited_alpha,
-    #     path = path,
-    #     model="alpha",
-    #     n_sim=args.n_sim,
-    #     title="Alpha model Likelihood Test"
-    # )
