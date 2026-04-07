@@ -171,49 +171,6 @@ MODELS = {
 
 }
 
-def deviance(phi_i, ephi_i, pdf):
-
-    #define the range of the integrand
-    nsigma = 5
-
-    #define the function to be integrated
-    def integ(pdf_test, phi_0, ephi_0):
-        #range for integration over the data uncertainties
-        phi_int_min = np.min(phi_0 - nsigma*ephi_0)
-        phi_int_max = np.max(phi_0 + nsigma*ephi_0)
-        phi_integrand = np.linspace(phi_int_min, phi_int_max, 100)
-
-        #integrand
-        rv = norm(loc=phi_0,scale=ephi_0)
-        integrand = rv.pdf(phi_integrand) * pdf_test(phi_integrand)
-        return trapezoid(integrand, x=phi_integrand)
-
-    #evaluate the integrand and its integral
-    likelihood = np.array([integ(pdf, phi_i[i], ephi_i[i]) for i in range(phi_i.size)])
-    lnL = np.sum(np.log(likelihood))
-
-    #Saturated model - not sure it is the best one
-    pdf_sat = lambda x: np.ones_like(x)
-    likelihood_sat = np.array([integ(pdf_sat, phi_i[i], ephi_i[i]) for i in range(phi_i.size)])
-    lnL_sat = np.sum(np.log(likelihood_sat))
-
-    return -2*(lnL-lnL_sat)
-
-def propagate_scipy_compatible(model, params, cov):
-    """
-    Computes output covariance via numerical Jacobian propagation.
-    """
-    params = np.asarray(params)
-    cov = np.asarray(cov)
-
-    y = model(params)
-    J = approx_derivative(model, params, method="2-point")
-
-    # Covariance propagation
-    ycov = J @ cov @ J.T
-
-    return y, ycov
-
 
 def summarize_fit(minuit):
     fmin = minuit.fmin
@@ -255,7 +212,9 @@ def minos_table(minuit):
 
     data = []
     for name in minuit.parameters:
-        m = minuit.merrors[name]
+        m = minuit.merrors.get(name, None)
+        if m is None:
+            continue
 
         data.append({
             "Parameter": name,
@@ -299,7 +258,7 @@ def fitting(phi_i, ephi_i, init_mean, init_std,
 
     #COME BACK HERE
     if model == "alpha" and init_alpha is None:
-        init_alpha = estimate_alpha_tail(phi_i/ephi_i)
+        init_alpha = estimate_alpha_tail(phi_i)
 
     if model == "gaussian":
         def minimize_func(init_mean, init_std):
@@ -308,12 +267,14 @@ def fitting(phi_i, ephi_i, init_mean, init_std,
 
             return -np.sum(logL_i)
 
-
-    elif model == "alpha":
+    if model == "alpha":
+        # Compute a scale factor from the data once
+        flux_scale = np.median(phi_i)  # e.g. ~1e-10
 
         def minimize_func(alpha, loc, scale):
-            # !!!! numerically unstable near alpha=1.0
-            if abs(alpha - 1.0) < 0.01 or alpha <= 0.5 or alpha > 2.0:
+            if alpha <= 1.05 or alpha > 2.0:
+                return 1e10
+            if scale <= 0 or loc < 0:
                 return 1e10
             try:
                 logpdf_vals = levy_stable.logpdf(phi_i, alpha, 1.0, loc=loc, scale=scale)
@@ -351,17 +312,22 @@ def fitting(phi_i, ephi_i, init_mean, init_std,
         scale0 = init_std
         alpha0 = init_alpha  # from estimator
 
+
         minuit_obj = Minuit(minimize_func, alpha0, loc0, scale0, name=param_names)
-        minuit_obj.limits["alpha"] = (0.01, 2.0)  # force away from alpha=1 singularity
-        minuit_obj.limits["scale"] = (1e-6, None)
-        #minuit_obj.limits["loc"] = (0, None)
-        # physically limited but don't have to
-        max_phi, min_phi  = np.max(phi_i/np.median(phi_i)), np.min(phi_i/np.median(phi_i))
+       # minuit_obj.limits["alpha"] = (1.1, 2.0)
+        #minuit_obj.limits["scale"] = (0, 100000 * np.max(phi_i))
+        # loc must be <= min(phi), since beta=1 means support is [loc, inf)
+        #minuit_obj.limits["loc"] = (1e-2 * np.min(phi_i), 10 * np.max(phi_i))
+        minuit_obj.values["alpha"] = init_alpha
+        minuit_obj.fixed["alpha"] = True
+        minuit_obj.limits["scale"] = (1e-12, None)
+
+        max_phi, min_phi = np.max(phi_i), np.min(phi_i)
         amp = np.abs(max_phi - min_phi)
-        minuit_obj.limits["loc"] = [-10000*amp, 10000*amp]
-        # minuit_obj.errors["alpha"] = 0.05
-        # minuit_obj.errors["loc"] = abs(loc0) * 0.1 or 0.1
-        # minuit_obj.errors["scale"] = scale0 * 0.1
+        #minuit_obj.limits["loc"] = (-10000 * amp, 10000 * amp)
+        #minuit_obj.limits["loc"] = (0, np.min(phi_i))
+
+
     else:
         minuit_obj = Minuit(minimize_func, init_mean, init_std, name=param_names)
 
@@ -477,19 +443,6 @@ def fitting(phi_i, ephi_i, init_mean, init_std,
 
     if skip_fit:
         yerr_prop = tuple(np.nan for _ in params)
-    # else:
-    #     cov = np.array(minuit_obj.covariance)
-    #     if cov.ndim < 2 or not minuit_obj.fmin.has_accurate_covar:
-    #         print("Covariance not available/accurate — skipping error propagation")
-    #         yerr_prop = tuple(np.nan for _ in params)
-        # else:
-        #     try:
-        #         y, ycov = propagate_scipy_compatible(
-        #             lambda p: pdf_model(p, *params), params, cov)
-        #         yerr_prop = np.sqrt(np.diag(ycov))
-        #     except Exception as e:
-        #         print(f"Error propagation failed: {e}")
-        #         yerr_prop = tuple(np.nan for _ in params)
 
     if model == "gaussian":
         dist = norm(loc=params[0], scale=params[1])
@@ -499,46 +452,57 @@ def fitting(phi_i, ephi_i, init_mean, init_std,
         dist = levy_stable(alpha=params[0], beta=1.0, loc=params[1], scale=params[2])
 
     best_params = [minuit_obj.values[name] for name in param_names]
+    errors = [minuit_obj.errors[name] for name in param_names]
     logL = -minimize_func(*best_params)
 
     if model == "alpha":
         return (*best_params, np.nan, np.nan, logL, converged)
 
-    full_result = {
-        #"basic": basic_result,
-        "params": [minuit_obj.values[name] for name in param_names],
-        "errors": [minuit_obj.errors[name] for name in param_names],
-        "logL": logL,
-        "converged": converged,
-        "edm": minuit_obj.fmin.edm,
-        "nfcn": minuit_obj.fmin.nfcn,
-        "has_call_limit": minuit_obj.fmin.has_reached_call_limit,
-        "has_valid_covar": minuit_obj.fmin.has_accurate_covar,
-    }
-    print(full_result)
-    # basic_result = (
-    #     *best_params,
-    #     *list(yerr_prop)[:len(best_params)],
-    #     logL,
-    #     converged,
-    # )
 
-    # if not return_full:
-    #     return basic_result
+
+    basic_result = (
+        *best_params,
+        *errors,
+        logL,
+        converged,
+    )
+
+    if not return_full:
+        return basic_result
 
     #extended diagnostics
 
     full_result = {
-       # "basic": basic_result,
+        "basic": basic_result,
         "params": [minuit_obj.values[name] for name in param_names],
         "errors": [minuit_obj.errors[name] for name in param_names],
         "logL": logL,
         "converged": converged,
+        "is_valid": minuit_obj.fmin.is_valid,
+        "has_valid_parameters": minuit_obj.fmin.has_valid_parameters,
+        "has_made_posdef_covar": minuit_obj.fmin.has_made_posdef_covar,
+        "hesse_failed": minuit_obj.fmin.hesse_failed,
+        "has_covariance": minuit_obj.fmin.has_covariance,
         "edm": minuit_obj.fmin.edm,
         "nfcn": minuit_obj.fmin.nfcn,
         "has_call_limit": minuit_obj.fmin.has_reached_call_limit,
         "has_valid_covar": minuit_obj.fmin.has_accurate_covar,
+        "at_limit": {
+            name: minuit_obj.at_limit(name)
+            for name in param_names
+        },
+        "fixed": {
+            name: minuit_obj.fixed[name]
+            for name in param_names
+        },
+        "limits": {
+            name: minuit_obj.limits[name]
+            for name in param_names
+        },
+        "minos_errors": minuit_obj.merrors if hasattr(minuit_obj, "merrors") else None,
+
     }
+    print(full_result)
 
     return full_result
 
@@ -1105,10 +1069,10 @@ if __name__ == "__main__":
     pdf_path = f"{path}/likelihood_scans_initial_LC.pdf"
 
     with PdfPages(pdf_path) as pdf:
-        mean, std = np.mean(phi / phi_med), np.std(phi / phi_med)
+        mean, std = np.mean(phi ), np.std(phi)
         params_fited_norm = fitting(
-            phi / phi_med,
-            ephi / phi_med,
+            phi ,
+            ephi ,
             mean,
             std,
             model="gaussian",
@@ -1116,15 +1080,15 @@ if __name__ == "__main__":
             do_plot=True,
             collect_stats=False,
         )
-        v = np.var(phi / phi_med)
+        v = np.var(phi )
         sigma2 = np.log(1 + v / mean ** 2)
         sigma = np.sqrt(sigma2)
 
         mu = np.log(mean) - sigma2 / 2
 
         params_fited_ln = fitting(
-            phi / phi_med,
-            ephi / phi_med,
+            phi,
+            ephi,
             mu,
             sigma,
             model="lognorm",
@@ -1132,14 +1096,14 @@ if __name__ == "__main__":
             do_plot=True,
             collect_stats=False,
         )
-        loc0 = np.median(phi / phi_med)
-        scale0 = np.percentile(phi / phi_med, 75) - np.percentile(phi / phi_med, 25)
-        scale0 /= 2 #!
-        alpha0 = estimate_alpha_tail(phi / phi_med)
+        loc0 = np.median(phi )
+        scale0 = np.std(phi)
+        alpha0 = 1.5
+        #estimate_alpha_tail(phi )
 
         params_fited_alpha = fitting(
-            phi / phi_med,
-            ephi / phi_med,
+            phi ,
+            ephi ,
             loc0,
             scale0,
             init_alpha = alpha0,
@@ -1157,10 +1121,10 @@ if __name__ == "__main__":
     ax.set_xlabel(r"log$_{10}$(energy flux [TeV cm$^{-2}$ s$^{-1}$])", ha="center", va='center', labelpad=12,
     			  fontsize=12)
     ax.set_ylabel(r"# entries", ha="center", va='center', labelpad=12, fontsize=12)
-    ratio = phi / phi_med
+    ratio = phi
     mask = ratio > 0
     log_phi = np.log10(ratio[mask])
-    hist, bins = hist_flux((phi / phi_med)[mask], (ephi / phi_med)[mask], 4)
+    hist, bins = hist_flux((phi)[mask], (ephi)[mask], 4)
     ax.stairs(hist, bins)
     bin_centers = 0.5 * (bins[1:] + bins[:-1])
     sel = hist >= 1
