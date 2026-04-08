@@ -320,7 +320,7 @@ def fitting(phi_i, ephi_i, init_mean, init_std,
         #minuit_obj.limits["loc"] = (1e-2 * np.min(phi_i), 10 * np.max(phi_i))
         minuit_obj.values["alpha"] = init_alpha
         minuit_obj.fixed["alpha"] = True
-        minuit_obj.limits["scale"] = (1e-12, None)
+        # minuit_obj.limits["scale"] = (1e-12, None)
 
         max_phi, min_phi = np.max(phi_i), np.min(phi_i)
         amp = np.abs(max_phi - min_phi)
@@ -1098,8 +1098,7 @@ if __name__ == "__main__":
         )
         loc0 = np.median(phi )
         scale0 = np.std(phi)
-        alpha0 = 1.5
-        #estimate_alpha_tail(phi )
+        alpha0 = 1.5 #estimate_alpha_tail(phi )
 
         params_fited_alpha = fitting(
             phi ,
