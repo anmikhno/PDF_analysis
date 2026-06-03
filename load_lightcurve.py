@@ -255,7 +255,9 @@ def minos_table(minuit):
 
     data = []
     for name in minuit.parameters:
-        m = minuit.merrors[name]
+        m = minuit.merrors.get(name, None)
+        if m is None:
+            continue
 
         data.append({
             "Parameter": name,
@@ -268,7 +270,6 @@ def minos_table(minuit):
     print(df)
 
     return df
-
 
 
 def likelihood_scan(minuit, pdf=None):
@@ -352,8 +353,10 @@ def fitting(phi_i, ephi_i, init_mean, init_std,
         alpha0 = init_alpha  # from estimator
 
         minuit_obj = Minuit(minimize_func, alpha0, loc0, scale0, name=param_names)
-        minuit_obj.limits["alpha"] = (0.01, 2.0)  # force away from alpha=1 singularity
+        minuit_obj.limits["alpha"] = (1.0, 2.0)  # force away from alpha=1 singularity
         minuit_obj.limits["scale"] = (1e-6, None)
+        minuit_obj.values["alpha"] = init_alpha
+        #minuit_obj.fixed["alpha"] = True
         #minuit_obj.limits["loc"] = (0, None)
         # physically limited but don't have to
         max_phi, min_phi  = np.max(phi_i/np.median(phi_i)), np.min(phi_i/np.median(phi_i))
@@ -438,12 +441,13 @@ def fitting(phi_i, ephi_i, init_mean, init_std,
     minos_df = minos_table(minuit_obj) if (not skip_fit and converged) else None
     #  scan
     if do_plot:
-        n_params = len(minuit_obj.parameters)
+        free_params = [p for p in minuit_obj.parameters if not minuit_obj.fixed[p]]
+        n_params = len(free_params)
         fig, axes = plt.subplots(1, n_params, figsize=(5 * n_params, 4))
         if n_params == 1:
             axes = [axes]
 
-        for ax, p in zip(axes, minuit_obj.parameters):
+        for ax, p in zip(axes, free_params):
             # size=30 instead of default 100 — 3× faster, still informative
             x, y, ok = minuit_obj.mnprofile(p, size=30)
             ax.plot(x, y, lw=1.8)
@@ -499,46 +503,57 @@ def fitting(phi_i, ephi_i, init_mean, init_std,
         dist = levy_stable(alpha=params[0], beta=1.0, loc=params[1], scale=params[2])
 
     best_params = [minuit_obj.values[name] for name in param_names]
+    print(f'this is errors: {minuit_obj.errors}')
+    errors = [minuit_obj.errors[name] for name in param_names]
     logL = -minimize_func(*best_params)
 
-    if model == "alpha":
-        return (*best_params, np.nan, np.nan, logL, converged)
+    # if model == "alpha":
+    #     return (*best_params, np.nan, np.nan, logL, converged)
+
+    basic_result = (
+        *best_params,
+        *errors,
+        logL,
+        converged,
+    )
+    print(f"This is so called basic result {basic_result}")
+    print("that's it")
+    if not return_full:
+        return basic_result
+
+    # extended diagnostics
 
     full_result = {
-        #"basic": basic_result,
+        "basic": basic_result,
         "params": [minuit_obj.values[name] for name in param_names],
         "errors": [minuit_obj.errors[name] for name in param_names],
         "logL": logL,
         "converged": converged,
+        "is_valid": minuit_obj.fmin.is_valid,
+        "has_valid_parameters": minuit_obj.fmin.has_valid_parameters,
+        "has_made_posdef_covar": minuit_obj.fmin.has_made_posdef_covar,
+        "hesse_failed": minuit_obj.fmin.hesse_failed,
+        "has_covariance": minuit_obj.fmin.has_covariance,
         "edm": minuit_obj.fmin.edm,
         "nfcn": minuit_obj.fmin.nfcn,
         "has_call_limit": minuit_obj.fmin.has_reached_call_limit,
         "has_valid_covar": minuit_obj.fmin.has_accurate_covar,
+        "at_limit": {
+            name: minuit_obj.at_limit(name)
+            for name in param_names
+        },
+        "fixed": {
+            name: minuit_obj.fixed[name]
+            for name in param_names
+        },
+        "limits": {
+            name: minuit_obj.limits[name]
+            for name in param_names
+        },
+        "minos_errors": minuit_obj.merrors if hasattr(minuit_obj, "merrors") else None,
+
     }
     print(full_result)
-    # basic_result = (
-    #     *best_params,
-    #     *list(yerr_prop)[:len(best_params)],
-    #     logL,
-    #     converged,
-    # )
-
-    # if not return_full:
-    #     return basic_result
-
-    #extended diagnostics
-
-    full_result = {
-       # "basic": basic_result,
-        "params": [minuit_obj.values[name] for name in param_names],
-        "errors": [minuit_obj.errors[name] for name in param_names],
-        "logL": logL,
-        "converged": converged,
-        "edm": minuit_obj.fmin.edm,
-        "nfcn": minuit_obj.fmin.nfcn,
-        "has_call_limit": minuit_obj.fmin.has_reached_call_limit,
-        "has_valid_covar": minuit_obj.fmin.has_accurate_covar,
-    }
 
     return full_result
 
@@ -1135,7 +1150,7 @@ if __name__ == "__main__":
         loc0 = np.median(phi / phi_med)
         scale0 = np.percentile(phi / phi_med, 75) - np.percentile(phi / phi_med, 25)
         scale0 /= 2 #!
-        alpha0 = estimate_alpha_tail(phi / phi_med)
+        alpha0 =  estimate_alpha_tail(phi / phi_med)
 
         params_fited_alpha = fitting(
             phi / phi_med,
@@ -1150,7 +1165,9 @@ if __name__ == "__main__":
         )
 
     #plot fit
-
+    print(f"paramas for lognorm {params_fited_ln}")
+    print(f"paramas for lognorm {params_fited_ln}")
+    print(f"The parameters for alpha {params_fited_alpha}")
     fig, ax = plt.subplots(figsize=(8, 6), nrows=1, ncols=1)
     plt.subplots_adjust(bottom=0.1, top=0.95, left=0.1, right=0.96, hspace=0.05)
     ax.set_title(title)
@@ -1169,33 +1186,33 @@ if __name__ == "__main__":
     log10phi_plot = np.linspace(np.min(log_phi), np.max(log_phi))
     phi_plot = np.power(10, log10phi_plot)
     normalization_pdf = phi.size * bin_size_log10 * np.log(10)
+
     pdf_ln = lambda x: pdf_LogNorm(x, params_fited_ln[0], params_fited_ln[1])
     label_lognorm = (
-    	"Lognormal fit\n"
-    	fr"$\mu = {params_fited_ln[0]:.2f} \pm {params_fited_ln[2]:.2f}$, "
-    	fr"$\sigma = {params_fited_ln[1]:.2f} \pm {params_fited_ln[3]:.2f}$"
+        "Lognormal fit\n"
+        fr"$\mu = {params_fited_ln[0]:.2e} \pm {params_fited_ln[2]:.2e}$, "
+        fr"$\sigma = {params_fited_ln[1]:.2e} \pm {params_fited_ln[3]:.2e}$"
     )
     ax.plot(log10phi_plot, phi_plot * pdf_ln(phi_plot) * normalization_pdf, label=label_lognorm)
 
     pdf_norm = lambda x: pdf_Gauss(x, params_fited_norm[0], params_fited_norm[1])
     label_norm = (
-    	"Gaussian fit\n"
-    	fr"$\mu = {params_fited_norm[0]:.2f} \pm {params_fited_norm[2]:.2f}$, "
-    	fr"$\sigma = {params_fited_norm[1]:.2f} \pm {params_fited_norm[3]:.2f}$"
+        "Gaussian fit\n"
+        fr"$\mu = {params_fited_norm[0]:.2e} \pm {params_fited_norm[2]:.2e}$, "
+        fr"$\sigma = {params_fited_norm[1]:.2e} \pm {params_fited_norm[3]:.2e}$"
     )
     ax.plot(log10phi_plot, phi_plot * pdf_norm(phi_plot) * normalization_pdf, label=label_norm)
 
-
-    #alpha
-    pdf_alpha = lambda x: pdf_alpha_stable(x, params_fited_alpha[0], params_fited_alpha[1], params_fited_alpha[2])
+    # alpha
+    pdf_alpha = lambda x: pdf_alpha_stable(x, alpha=params_fited_alpha[0], loc=params_fited_alpha[1],
+                                           scale=params_fited_alpha[2])
     label_alpha = (
         "Alpha fit\n"
-        fr"$\mu = {params_fited_alpha[0]:.2f} \pm {params_fited_alpha[3]:.2f}$, "
-        fr"$\sigma = {params_fited_alpha[1]:.2f} \pm {params_fited_alpha[4]:.2f}$,"
-        fr"$\alpha = {params_fited_alpha[2]:.2f} \pm {params_fited_alpha[5]:.2f}$,"
+        fr"$\alpha = {params_fited_alpha[0]:.2f} \pm {params_fited_alpha[3]:.2f}$, "
+        fr"$loc = {params_fited_alpha[1]:.2e} \pm {params_fited_alpha[4]:.2e}$,"
+        fr"$scale = {params_fited_alpha[2]:.2e} \pm {params_fited_alpha[5]:.2e}$,"
     )
     ax.plot(log10phi_plot, phi_plot * pdf_alpha(phi_plot) * normalization_pdf, label=label_alpha)
-
     plt.legend()
     plt.savefig(f"{path}/fit_histo_.pdf", dpi=150)
 
