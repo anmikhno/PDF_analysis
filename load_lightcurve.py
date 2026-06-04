@@ -19,6 +19,7 @@ from scipy.stats import levy_stable
 from multiprocessing import Pool,  cpu_count
 from astropy.io import ascii
 import pandas as pd
+levy_stable.parameterization = 'S0'
 
 parser = argparse.ArgumentParser(
     prog = "load_lightcurve.py",
