@@ -354,7 +354,7 @@ def fitting(phi_i, ephi_i, init_mean, init_std,
         alpha0 = init_alpha  # from estimator
 
         minuit_obj = Minuit(minimize_func, alpha0, loc0, scale0, name=param_names)
-        minuit_obj.limits["alpha"] = (1.0, 2.0)  # force away from alpha=1 singularity
+        minuit_obj.limits["alpha"] = (0.001, 2.0)  # force away from alpha=1 singularity
         minuit_obj.limits["scale"] = (1e-6, None)
         minuit_obj.values["alpha"] = init_alpha
         #minuit_obj.fixed["alpha"] = True
@@ -456,6 +456,9 @@ def fitting(phi_i, ephi_i, init_mean, init_std,
                        linestyle="--", lw=1.2, label="best fit")
             ax.set_xlabel(p)
             ax.set_ylabel("−2 ln L")
+            # if p == "alpha":
+            #     ax.set_ylim(0.99*np.min(y), 1.1*np.min(y))
+            #ax.set_ylim(120, 135)
             ax.set_title(f"Profile: {p}")
             ax.legend(fontsize=8)
 
