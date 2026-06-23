@@ -351,32 +351,97 @@ def fitting(phi_i, ephi_i, init_mean, init_std,
     if model == "alpha":
         loc0 = init_mean
         scale0 = init_std
-        alpha0 = init_alpha  # from estimator
 
+        # --- GRID SCAN: find best alpha basin before handing off to Minuit ---
+        alpha_grid = np.arange(0.6, 2.0, 0.05)  # coarse, ~28 evaluations
+        best_nll_grid = np.inf
+        best_alpha0 = init_alpha  # fallback to estimator
+
+        for a_try in alpha_grid:
+            if abs(a_try - 1.0) < 0.01:  # skip the alpha=1 singularity
+                continue
+            try:
+                lp = levy_stable.logpdf(phi_i, a_try, 1.0, loc=loc0, scale=scale0)
+                if not np.isfinite(lp).all():
+                    continue
+                nll = -np.sum(lp)
+                if nll < best_nll_grid:
+                    best_nll_grid = nll
+                    best_alpha0 = a_try
+            except Exception:
+                continue
+
+        print(f"[grid scan] init_alpha={init_alpha:.3f} → best_alpha0={best_alpha0:.3f}  "
+              f"(NLL={best_nll_grid:.3f})")
+        # --- end grid scan ---
+
+        alpha0 = best_alpha0  # was: alpha0 = init_alpha
         minuit_obj = Minuit(minimize_func, alpha0, loc0, scale0, name=param_names)
-        minuit_obj.limits["alpha"] = (0.001, 2.0)  # force away from alpha=1 singularity
+        minuit_obj.limits["alpha"] = (0.001, 2.0)
         minuit_obj.limits["scale"] = (1e-6, None)
-        minuit_obj.values["alpha"] = init_alpha
-        #minuit_obj.fixed["alpha"] = True
-        #minuit_obj.limits["loc"] = (0, None)
-        # physically limited but don't have to
-        max_phi, min_phi  = np.max(phi_i/np.median(phi_i)), np.min(phi_i/np.median(phi_i))
+        minuit_obj.values["alpha"] = alpha0  # was: init_alpha
+        max_phi, min_phi = np.max(phi_i / np.median(phi_i)), np.min(phi_i / np.median(phi_i))
         amp = np.abs(max_phi - min_phi)
-        minuit_obj.limits["loc"] = [-10000*amp, 10000*amp]
-        # minuit_obj.errors["alpha"] = 0.05
-        # minuit_obj.errors["loc"] = abs(loc0) * 0.1 or 0.1
-        # minuit_obj.errors["scale"] = scale0 * 0.1
+        minuit_obj.limits["loc"] = [-10000 * amp, 10000 * amp]
     else:
         minuit_obj = Minuit(minimize_func, init_mean, init_std, name=param_names)
 
     if not skip_fit:
-        minuit_obj.simplex(ncall=2000)  # gradient-free, finds basin
-        minuit_obj.migrad(ncall=5000)
+        if model == "alpha":
+            # --- MULTI-START: try several alpha seeds, keep best valid result ---
+            # candidates: grid best, plus neighbours, plus estimator
+            alpha_starts = sorted(set([
+                round(best_alpha0, 2),
+                round(best_alpha0 - 0.1, 2),
+                round(best_alpha0 + 0.1, 2),
+                round(init_alpha, 2),
+                1.5, 1.7, 1.2,  # broad coverage
+            ]))
+            alpha_starts = [a for a in alpha_starts
+                            if 0.6 <= a <= 1.99 and abs(a - 1.0) > 0.02]
 
-        # retry with simplex seed if migrad failed
-        if not minuit_obj.fmin.is_valid:
-            minuit_obj.simplex(ncall=3000)
+            best_fval = np.inf
+            best_minuit = None
+
+            for a0 in alpha_starts:
+                m = Minuit(minimize_func, a0, loc0, scale0, name=param_names)
+                m.limits["alpha"] = (0.55, 1.99)
+                m.limits["scale"] = (1e-6, None)
+                m.limits["loc"] = minuit_obj.limits["loc"]  # reuse computed limits
+
+                m.simplex(ncall=3000)
+                m.migrad(ncall=8000)
+
+                print(f"  [multistart] alpha0={a0:.2f} → "
+                      f"fval={m.fmin.fval:.4f}  valid={m.fmin.is_valid}  "
+                      f"EDM={m.fmin.edm:.2e}  alpha={m.values['alpha']:.4f}")
+
+                # prefer valid; among valid prefer lowest fval;
+                # if none valid, keep lowest fval anyway
+                is_better = (
+                        (m.fmin.is_valid and not best_minuit) or
+                        (m.fmin.is_valid and (best_minuit is None or not best_minuit.fmin.is_valid)) or
+                        (m.fmin.is_valid == (best_minuit is not None and best_minuit.fmin.is_valid)
+                         and m.fmin.fval < best_fval)
+                )
+                if is_better:
+                    best_fval = m.fmin.fval
+                    best_minuit = m
+
+            minuit_obj = best_minuit  # replace with best found
+            print(f"[multistart] winner: alpha0 → alpha={minuit_obj.values['alpha']:.4f}  "
+                  f"fval={minuit_obj.fmin.fval:.4f}  valid={minuit_obj.fmin.is_valid}")
+            # --- end multi-start ---
+
+        else:
+            # original path for gaussian / lognorm
+            minuit_obj.simplex(ncall=2000)
             minuit_obj.migrad(ncall=5000)
+
+            if not minuit_obj.fmin.is_valid:
+                minuit_obj.simplex(ncall=3000)
+                minuit_obj.migrad(ncall=5000)
+
         if model == "alpha" and minuit_obj.fmin.is_valid:
             minuit_obj.hesse()
     else:
@@ -456,8 +521,8 @@ def fitting(phi_i, ephi_i, init_mean, init_std,
                        linestyle="--", lw=1.2, label="best fit")
             ax.set_xlabel(p)
             ax.set_ylabel("−2 ln L")
-            # if p == "alpha":
-            #     ax.set_ylim(0.99*np.min(y), 1.1*np.min(y))
+            if p == "alpha":
+                ax.set_ylim(0.99*np.min(y), 1.1*np.min(y))
             #ax.set_ylim(120, 135)
             ax.set_title(f"Profile: {p}")
             ax.legend(fontsize=8)
